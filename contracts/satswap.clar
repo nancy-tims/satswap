@@ -40,6 +40,14 @@
     )
 )
 
+;; Define the flash swap callback trait
+(define-trait flash-swap-callback-trait
+    (
+        ;; Execute flash swap callback - called by the flash-swap function
+        (execute-flash-swap (uint uint) (response bool uint))
+    )
+)
+
 ;; Error codes
 (define-constant ERR-NOT-AUTHORIZED (err u1000))
 (define-constant ERR-INSUFFICIENT-BALANCE (err u1001))
@@ -207,14 +215,14 @@
 
 (define-private (check-and-execute-swap (pool-id uint) (amount-in uint))
     (let (
-        (pool (unwrap! (map-get? pools { pool-id: pool-id }) ERR-POOL-NOT-FOUND))
-        (output (unwrap! (calculate-swap-output pool-id amount-in true) ERR-POOL-NOT-FOUND))
+        (pool (default-to 
+            { token-x: tx-sender, token-y: tx-sender, reserve-x: u0, reserve-y: u0, total-supply: u0, fee-rate: u0, last-block: u0, cumulative-fee-x: u0, cumulative-fee-y: u0, price-cumulative-last: u0, price-timestamp: u0, twap: u0 }
+            (map-get? pools { pool-id: pool-id })))
+        (output-result (calculate-swap-output pool-id amount-in true))
     )
-    
-    ;; Execute swap
-    (try! (execute-single-swap pool-id amount-in (get output output)))
-    
-    (ok (get output output)))
+    (match output-result
+        output-data (get output output-data)
+        err-val amount-in))
 )
 
 ;; Read-only functions
@@ -487,7 +495,7 @@
 
 ;; Enhanced swap functions with flash loan support
 
-(define-public (flash-swap (pool-id uint) (token-x <ft-trait>) (token-y <ft-trait>) (amount-x uint) (callback-contract principal))
+(define-public (flash-swap (pool-id uint) (token-x <ft-trait>) (token-y <ft-trait>) (amount-x uint) (callback-contract <flash-swap-callback-trait>))
     (let (
         (pool (unwrap! (map-get? pools { pool-id: pool-id }) ERR-POOL-NOT-FOUND))
         (loan-id (var-get next-loan-id))
@@ -546,16 +554,13 @@
 (define-public (multi-hop-swap (path (list 10 uint)) (amount-in uint) (min-amount-out uint))
     (let (
         (first-pool (unwrap! (map-get? pools { pool-id: (unwrap! (element-at path u0) ERR-INVALID-PAIR) }) ERR-POOL-NOT-FOUND))
-        (current-amount amount-in)
+        (final-amount (fold check-and-execute-swap path amount-in))
     )
     
-    ;; Execute swaps through path
-    (fold check-and-execute-swap path current-amount)
-    
     ;; Verify final amount meets minimum
-    (asserts! (>= current-amount min-amount-out) ERR-SLIPPAGE-TOO-HIGH)
+    (asserts! (>= final-amount min-amount-out) ERR-SLIPPAGE-TOO-HIGH)
     
-    (ok current-amount))
+    (ok final-amount))
 )
 
 ;; Yield farming functions
